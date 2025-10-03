@@ -1,0 +1,288 @@
+import React, { useMemo, useState } from "react";
+import Papa from "papaparse";
+
+// ----------------- Helpers -----------------
+const num = (row: Record<string, any>, keys: string[], fallback = 0): 
+number => {
+  for (const k of keys) {
+    if (k === "0") continue;
+    const raw = row[k];
+    if (raw === undefined || raw === null || raw === "") continue;
+    let v = String(raw).trim();
+    if (v === "-" || v.toLowerCase() === "nan") continue;
+    v = v.replace(/[\u2212\u2013]/g, "-");
+    v = v.replace(/^([+\-])\s+/, "$1");
+    v = v.replace(/,/g, "");
+    if (v.endsWith("%")) v = v.slice(0, -1);
+    let n = Number(v);
+    if (!Number.isNaN(n)) return n;
+    const cleaned = v.replace(/[^0-9+\-\.]/g, "");
+    n = Number(cleaned);
+    if (!Number.isNaN(n)) return n;
+  }
+  return fallback;
+};
+
+const text = (row: Record<string, any>, keys: string[], fallback = ""): 
+string => {
+  for (const k of keys) {
+    if (k === "0") continue;
+    const raw = row[k];
+    if (raw === undefined || raw === null) continue;
+    const v = String(raw).trim();
+    if (v) return v;
+  }
+  return fallback;
+};
+
+function preprocessCsv(csvText: string) {
+  const lines = csvText.split(/\r?\n/).filter((l) => l.trim() !== "");
+  const headerIdx = lines.findIndex(
+    (l) => /(,|\t)(Athletes|Player)(,|\t)/i.test(l) || 
+/^Athletes(,|\t)/i.test(l) || /^Player(,|\t)/i.test(l)
+  );
+  const start = headerIdx >= 0 ? headerIdx : 0;
+  return lines.slice(start).join("\n");
+}
+
+// ----------------- PRO 2.0 Continuous Bonus Functions -----------------
+function efgScore(eFG: number): number {
+  if (eFG <= 35) return -2;
+  if (eFG < 43) return -2 + (eFG - 35) * (2 / 8);
+  if (eFG < 47) return 0 + (eFG - 43) * (2 / 4);
+  if (eFG < 55) return 2 + (eFG - 47) * (2 / 8);
+  return 4;
+}
+
+function astToScore(r: number): number {
+  return Math.max(-2, Math.min(4, -2 + (r - 0.5) * (6 / 2.0)));
+}
+
+function toScore(to_pct: number): number {
+  return Math.max(-2, Math.min(4, 4 - (to_pct - 8) * (6 / 18)));
+}
+
+function ftScore(ft_pct: number): number {
+  return Math.max(-2, Math.min(4, -2 + (ft_pct - 50) * (6 / 40)));
+}
+
+function pmScore(pm: number): number {
+  return Math.max(-2, Math.min(4, -2 + (pm + 10) * (6 / 20)));
+}
+
+// ----------------- PRO Calculator -----------------
+function calculatePRO(row: Record<string, any>) {
+  const name = text(row, ["Athletes", "Player", "Name"]);
+  const GP = num(row, ["GP", "Games", "G"], 0);
+  const minsPerGame = num(row, ["MINS", "MIN", "Minutes"], 0);
+
+  const pts22 = num(row, ["PPG", "PTS"], 0) / (minsPerGame || 1) * 22;
+  const ast22 = num(row, ["AST"], 0) / (minsPerGame || 1) * 22;
+  const trb22 = num(row, ["REB"], 0) / (minsPerGame || 1) * 22;
+  const stl22 = num(row, ["STL"], 0) / (minsPerGame || 1) * 22;
+  const blk22 = num(row, ["BLK"], 0) / (minsPerGame || 1) * 22;
+  const defl22 = num(row, ["DEFL"], 0) / (minsPerGame || 1) * 22;
+  const scp22 = num(row, ["SCP"], 0) / (minsPerGame || 1) * 22;
+  const orb22 = num(row, ["OREB"], 0) / (minsPerGame || 1) * 22;
+
+  // Efficiency metrics
+  const fgm = num(row, ["FGM"]);
+  const fga = num(row, ["FGA"]);
+  const tpm = num(row, ["3FGM", "3PM"]);
+  const efg = num(row, ["eFG%", "EFG%"], fga > 0 ? ((fgm + 0.5 * tpm) / 
+fga) * 100 : 0);
+
+  const ast = num(row, ["AST"]);
+  const tov = num(row, ["TO", "TOV"]);
+  const astTo = tov > 0 ? ast / tov : ast;
+
+  const plusMinus = num(row, ["+/-", "PM/G", "PlusMinus"]);
+  const fta = num(row, ["FTA"]);
+  const ftm = num(row, ["FTM"]);
+  const ftPct = num(row, ["FT%"], fta > 0 ? (ftm / fta) * 100 : 0);
+  const toPct = num(row, ["TO%"], (fga + 0.44 * fta + tov) > 0 ? (tov * 
+100) / (fga + 0.44 * fta + tov) : 0);
+
+  // Continuous bonuses
+  const bonus =
+    efgScore(efg) +
+    astToScore(astTo) +
+    pmScore(plusMinus) +
+    toScore(toPct) +
+    ftScore(ftPct);
+
+  // Rate component (unchanged)
+  const rate = pts22 + ast22 * 1.5 + trb22 + stl22 * 2 + blk22 * 2 + 
+defl22 * 0.5 + scp22 * 0.5 + orb22 * 0.5;
+  const PRO = rate + bonus;
+
+  let level = "Unproductive" as const;
+  if (PRO >= 35) level = "Highly Productive";
+  else if (PRO >= 20) level = "Productive";
+  else if (PRO >= 10) level = "Average";
+
+  return {
+    name,
+    GP,
+    minsPerGame,
+    PRO: PRO.toFixed(2),
+    level,
+    debug: { pts22, ast22, trb22, stl22, blk22, defl22, scp22, orb22 }
+  };
+}
+
+// ----------------- Main App -----------------
+export default function ProAnalyzer() {
+  const [players, setPlayers] = useState<any[]>([]);
+  const [csvText, setCsvText] = useState("");
+  const [error, setError] = useState("");
+  const [showDebug, setShowDebug] = useState(false);
+  const [view, setView] = useState<"cards"|"table">("cards");
+  const [minGames, setMinGames] = useState(1);
+
+  const onFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => setCsvText(String(reader.result));
+    reader.readAsText(f);
+  };
+
+  const analyze = (rawText: string) => {
+    try {
+      setError(""); setPlayers([]);
+      const cleaned = preprocessCsv(rawText);
+      const results = Papa.parse(cleaned, { header: true, skipEmptyLines: 
+true });
+      const rows: any[] = (results.data as any[]) || [];
+      if (!rows.length) { setError("No players found."); return; }
+
+      if (rows.every(r => !r["Athletes"] && !r["Player"] && !r["Name"])) {
+        setError("Team stats CSV detected. Please upload an 'All Athletes' 
+export with player rows.");
+        return;
+      }
+
+      const stats = rows
+        .filter(r => (r["Athletes"]||r["Player"]) && 
+!/unknown/i.test(String(r["Athletes"]||"")))
+        .map(calculatePRO)
+        .filter(p => p.name && p.name.trim().length > 0 && p.GP >= 
+minGames);
+
+      setPlayers(stats);
+    } catch (e) { console.error(e); setError("Error analyzing CSV."); }
+  };
+
+  const sorted = useMemo(() => 
+players.slice().sort((a,b)=>Number(b.PRO)-Number(a.PRO)), [players]);
+
+  const levelColor = (level: string) => {
+    switch(level){
+      case "Highly Productive": return "text-green-600";
+      case "Productive": return "text-green-600";
+      case "Average": return "text-yellow-600";
+      case "Unproductive": return "text-red-600";
+      default: return "";
+    }
+  };
+
+  return (
+    <div className="p-6 max-w-7xl mx-auto bg-gray-50 text-gray-900 
+dark:bg-gray-900 dark:text-gray-100">
+      <h1 className="text-3xl font-bold mb-4 text-center">🏀 PRO Analyzer 
+2.0 (Hudl CSV)</h1>
+      <div className="flex flex-wrap gap-2 mb-4 items-center">
+        <input type="file" accept=".csv" onChange={onFile} 
+className="border px-2 py-1 dark:bg-gray-800 dark:border-gray-600" />
+        {csvText && (
+          <button onClick={()=>analyze(csvText)} className="px-4 py-2 
+bg-green-600 text-white rounded hover:bg-green-700">Start 
+Analysis</button>
+        )}
+        <label className="flex items-center gap-2 text-sm ml-2">
+          <input type="checkbox" checked={showDebug} 
+onChange={(e)=>setShowDebug(e.target.checked)} /> Show Debug
+        </label>
+        <label className="flex items-center gap-2 text-sm ml-2">
+          Min Games:
+          <input type="number" value={minGames} 
+onChange={(e)=>setMinGames(Number(e.target.value))} className="border w-16 
+px-1 py-0.5 dark:bg-gray-800 dark:border-gray-600" />
+        </label>
+        <button onClick={()=>setView(view==="cards"?"table":"cards")} 
+className="ml-auto px-3 py-1 rounded bg-gray-700 text-white 
+hover:bg-gray-800">Switch to {view==="cards"?"Table":"Cards"}</button>
+      </div>
+
+      {error && <p className="text-red-600">{error}</p>}
+
+      {players.length>0 && view === "cards" && (
+        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
+          {sorted.map((p: any, i: number) => (
+            <div key={i} className="p-4 border rounded shadow bg-white 
+dark:bg-gray-800 dark:border-gray-700">
+              <h2 className="text-xl font-semibold">{p.name}</h2>
+              <p className={`font-bold ${levelColor(p.level)}`}>PRO: 
+{p.PRO} ({p.level})</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">GP: 
+{p.GP} · MPG: {p.minsPerGame}</p>
+              {showDebug && (
+                <div className="mt-2 text-xs text-gray-700 
+dark:text-gray-300 grid grid-cols-2 gap-1">
+                  <div>Pts/22: {p.debug.pts22.toFixed(2)}</div>
+                  <div>Ast/22: {p.debug.ast22.toFixed(2)}</div>
+                  <div>Reb/22: {p.debug.trb22.toFixed(2)}</div>
+                  <div>Stl/22: {p.debug.stl22.toFixed(2)}</div>
+                  <div>Blk/22: {p.debug.blk22.toFixed(2)}</div>
+                  <div>Defl/22: {p.debug.defl22.toFixed(2)}</div>
+                  <div>SCP/22: {p.debug.scp22.toFixed(2)}</div>
+                  <div>ORB/22: {p.debug.orb22.toFixed(2)}</div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {players.length>0 && view === "table" && (
+        <div className="overflow-x-auto">
+          <table className="min-w-full border text-sm bg-white 
+dark:bg-gray-800 rounded-lg overflow-hidden">
+            <thead className="bg-gray-200 dark:bg-gray-700">
+              <tr>
+                <th className="border px-3 py-2 text-left">Player</th>
+                <th className="border px-3 py-2">PRO</th>
+                <th className="border px-3 py-2">Level</th>
+                <th className="border px-3 py-2">GP</th>
+                <th className="border px-3 py-2">MPG</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((p: any, i: number) => (
+                <tr key={i} className="hover:bg-gray-50 
+dark:hover:bg-gray-600">
+                  <td className="border px-3 py-2 
+font-medium">{p.name}</td>
+                  <td className={`border px-3 py-2 font-bold 
+${levelColor(p.level)}`}>{p.PRO}</td>
+                  <td className={`border px-3 py-2 
+${levelColor(p.level)}`}>{p.level}</td>
+                  <td className="border px-3 py-2 text-center">{p.GP}</td>
+                  <td className="border px-3 py-2 
+text-center">{p.minsPerGame}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {players.length===0 && !error && (
+        <p className="text-sm text-gray-500 dark:text-gray-400">Upload a 
+Hudl CSV (Averages or Totals) and click Start Analysis.</p>
+      )}
+    </div>
+  );
+}
+
