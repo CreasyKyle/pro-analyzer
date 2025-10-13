@@ -181,10 +181,10 @@ export default function ProAnalyzer() {
 
       if (rows.every((r) => !r["Athletes"] && !r["Player"] && !r["Name"])) 
 {
-        if (rows.every((r) => !r["Athletes"] && !r["Player"] && !r["Name"])) {
-          setError("Team stats CSV detected. Please upload an 'All Athletes' export with player rows.");
-          return;
-        }      }
+      setError("Team stats CSV detected. Please upload an 'All Athletes' 
+export with player rows.");
+ return;
+      }
 
       const stats = rows
         .filter(
